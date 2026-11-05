@@ -631,110 +631,6 @@
 
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, collection, getDocs, addDoc, deleteDoc, doc, query, where, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-
-    const firebaseConfig = {
-      apiKey: "AIzaSyB5X88KysxgHfh9PJ_pBbSuCJMANQTaxLo",
-      authDomain: "gospel-tracks-9a7bd.firebaseapp.com",
-      projectId: "gospel-tracks-9a7bd",
-      storageBucket: "gospel-tracks-9a7bd.firebasestorage.app",
-      messagingSenderId: "137071890595",
-      appId: "1:137071890595:web:0d150997745aad48586f16"
-    };
-
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-
-    window.fsGetAuthorizedEmails = async function() {
-      const snap = await getDocs(collection(db, "authorized_emails"));
-      return snap.docs.map(d => ({ email: d.data().email.toLowerCase(), id: d.id, ...d.data() }));
-    };
-
-    window.fsIsAuthorized = async function(email) {
-      const snap = await getDocs(query(collection(db, "authorized_emails"), where("email", "==", email.toLowerCase())));
-      return !snap.empty;
-    };
-
-    window.fsAddEmail = async function(email) {
-      const existing = await getDocs(query(collection(db, "authorized_emails"), where("email", "==", email.toLowerCase())));
-      if (existing.empty) {
-        await addDoc(collection(db, "authorized_emails"), { email: email.toLowerCase(), addedAt: serverTimestamp(), source: "manual" });
-      }
-    };
-
-    window.fsRemoveEmail = async function(email) {
-      const snap = await getDocs(query(collection(db, "authorized_emails"), where("email", "==", email.toLowerCase())));
-      for (const d of snap.docs) await deleteDoc(doc(db, "authorized_emails", d.id));
-    };
-
-    window.fsCheckFirstAccess = async function(email) {
-      const snap = await getDocs(query(collection(db, "authorized_emails"), where("email", "==", email.toLowerCase())));
-      if (snap.empty) return false;
-      const data = snap.docs[0].data();
-      return !data.firstAccessAt;
-    };
-
-    window.fsMarkFirstAccess = async function(email) {
-      const snap = await getDocs(query(collection(db, "authorized_emails"), where("email", "==", email.toLowerCase())));
-      if (!snap.empty) {
-        const ref = doc(db, "authorized_emails", snap.docs[0].id);
-        const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
-        await updateDoc(ref, { firstAccessAt: serverTimestamp() });
-      }
-    };
-
-    window.fsLogDownload = async function(email, fileName, artistName) {
-      await addDoc(collection(db, "downloads"), {
-        email: email.toLowerCase(),
-        fileName,
-        artistName,
-        downloadedAt: serverTimestamp(),
-      });
-    };
-
-    window.fsGetDownloads = async function() {
-      const snap = await getDocs(query(collection(db, "downloads"), orderBy("downloadedAt", "desc"), limit(200)));
-      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    };
-
-    window.fsSaveRequest = async function(data) {
-      await addDoc(collection(db, "access_requests"), {
-        ...data,
-        status: "pending",
-        createdAt: serverTimestamp(),
-      });
-    };
-
-    window.fsGetPendingRequests = async function() {
-      const snap = await getDocs(query(collection(db, "access_requests"), where("status", "==", "pending"), orderBy("createdAt", "desc")));
-      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    };
-
-    window.fsApproveRequest = async function(requestId, emailGoogle) {
-      const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
-      await window.fsAddEmail(emailGoogle);
-      await updateDoc(doc(db, "access_requests", requestId), { status: "approved", approvedAt: serverTimestamp() });
-    };
-
-    window.fsRejectRequest = async function(requestId) {
-      const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
-      await updateDoc(doc(db, "access_requests", requestId), { status: "rejected", rejectedAt: serverTimestamp() });
-    };
-
-    window.fsInit = async function() {
-      const snap = await getDocs(collection(db, "authorized_emails"));
-      if (snap.empty) {
-        const initial = ["multitrackdeexcelencia@gmail.com", "victorkaviedes@gmail.com"];
-        for (const email of initial) {
-          await addDoc(collection(db, "authorized_emails"), { email, source: "initial", addedAt: serverTimestamp() });
-        }
-      }
-    };
-
-    document.dispatchEvent(new Event("firebaseReady"));
-  </script>
 
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
@@ -749,58 +645,94 @@
       CLIENT_ID: "406813732366-ivm27bscqmo9ne2sla6qck6e5tdr13se.apps.googleusercontent.com",
       ROOT_FOLDER_NAME: "MULTITRACK GOSPEL DE EXCELÊNCIA",
       PHOTOS_FOLDER_NAME: "Fotos",
-      ADMIN_EMAILS: ["multitrackdeexcelencia@gmail.com"],
     };
     let allArtists = [];
     let currentUserEmail = null;
     let currentUserName = null;
     let allDownloads = [];
+    let currentIsAdmin = false;
+    let sessionToken = null;
+
+    // Tudo que exige permissao passa pelo servidor, que confere o login do Google.
+    const API_URL = "https://us-central1-gospel-tracks-9a7bd.cloudfunctions.net/api";
+
+    function authHeaders() {
+      return sessionToken ? { Authorization: "Bearer " + sessionToken } : {};
+    }
+
+    async function api(action, data) {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ ...(data || {}), action }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(body.error || ("HTTP " + res.status));
+        err.status = res.status;
+        err.body = body;
+        throw err;
+      }
+      return body;
+    }
+
+    function esc(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
 
     const SESSION_KEY = "vsgospel_session";
 
-    document.addEventListener("firebaseReady", async () => {
-      await window.fsInit();
-      await tryRestoreSession();
-    });
+    document.addEventListener("DOMContentLoaded", () => { tryRestoreSession(); });
+    // Se a biblioteca do Google carregou antes deste script, o onload dela não achou initGoogleAuth
+    if (window.google && google.accounts && google.accounts.id) initGoogleAuth();
 
     // ============================================================
     // SESSÃO — salvar/restaurar/apagar
     // ============================================================
-    function saveSession(email, name) {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ email, name }));
+    function saveSession(email, name, token) {
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ email, name, token }));
     }
 
     function clearSession() {
       localStorage.removeItem(SESSION_KEY);
+      sessionToken = null;
+      currentIsAdmin = false;
     }
 
     async function tryRestoreSession() {
-      try {
-        const raw = localStorage.getItem(SESSION_KEY);
-        if (!raw) return; // sem sessão salva, fica na tela de login
-        const { email, name } = JSON.parse(raw);
-        if (!email) return;
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch(e) {}
+      // Sem sessão, ou sessão da versão antiga (sem token): fica na tela de login
+      if (!saved || !saved.token) { clearSession(); return; }
 
-        showSpinner();
-        // Revalida se o usuário ainda está autorizado no Firestore
-        if (!(await window.fsIsAuthorized(email))) {
+      sessionToken = saved.token;
+      showSpinner();
+      try {
+        const s = await api("session");
+        if (s.token) sessionToken = s.token;
+        enterPlatform(s.email, s.name || saved.name, s.isAdmin);
+      } catch(e) {
+        if (e.status === 401 || e.status === 403) {
           clearSession();
           document.getElementById("login-screen").style.display = "flex";
-          return;
+        } else {
+          console.error("Erro ao restaurar sessão:", e);
+          showScreen("error");
         }
-
-        currentUserEmail = email;
-        currentUserName = name;
-        document.getElementById("user-email-display").textContent = currentUserEmail;
-        document.getElementById("user-email-display").style.display = "block";
-        if (isAdmin(currentUserEmail)) document.getElementById("admin-btn").style.display = "block";
-        document.getElementById("logout-btn").style.display = "block";
-        showScreen("artists");
-        loadDriveData();
-      } catch(e) {
-        clearSession();
-        document.getElementById("login-screen").style.display = "flex";
       }
+    }
+
+    function enterPlatform(email, name, isAdminUser) {
+      currentUserEmail = email;
+      currentUserName = name;
+      currentIsAdmin = !!isAdminUser;
+      saveSession(email, name, sessionToken);
+      document.getElementById("user-email-display").textContent = currentUserEmail;
+      document.getElementById("user-email-display").style.display = "block";
+      if (currentIsAdmin) document.getElementById("admin-btn").style.display = "block";
+      document.getElementById("logout-btn").style.display = "block";
+      showScreen("artists");
+      loadDriveData();
     }
 
     function logout() {
@@ -844,41 +776,25 @@
       if (!response.credential) { showScreen("error"); return; }
       showSpinner();
       try {
-        const payload = JSON.parse(atob(response.credential.split('.')[1]));
-        currentUserEmail = payload.email;
-        currentUserName = payload.given_name || payload.name || payload.email.split("@")[0];
-
-        if (!(await window.fsIsAuthorized(currentUserEmail))) {
+        // O servidor confere a assinatura do Google e se o e-mail tem acesso
+        const r = await api("login", { credential: response.credential });
+        sessionToken = r.token;
+        enterPlatform(r.email, r.name, r.isAdmin);
+        if (r.firstAccess) showWelcome(r.name);
+      } catch(e) {
+        if (e.status === 403 && e.body && e.body.error === "not_authorized") {
           showScreen("unauthorized");
           document.getElementById("unauth-msg").textContent =
-            currentUserEmail + " não está na lista de usuários autorizados. Solicite acesso ao administrador.";
+            (e.body.email || "Este e-mail") + " não está na lista de usuários autorizados. Solicite acesso ao administrador.";
           return;
         }
-
-        // Salva sessão para persistir após F5
-        saveSession(currentUserEmail, currentUserName);
-
-        document.getElementById("user-email-display").textContent = currentUserEmail;
-        document.getElementById("user-email-display").style.display = "block";
-        if (isAdmin(currentUserEmail)) document.getElementById("admin-btn").style.display = "block";
-        document.getElementById("logout-btn").style.display = "block";
-
-        showScreen("artists");
-        loadDriveData();
-
-        const isFirst = await window.fsCheckFirstAccess(currentUserEmail);
-        if (isFirst) {
-          await window.fsMarkFirstAccess(currentUserEmail);
-          showWelcome(currentUserName);
-        }
-      } catch(e) {
         console.error("Erro no handleCredentialResponse:", e);
         showScreen("error");
       }
     }
 
     function isAdmin(email) {
-      return CONFIG.ADMIN_EMAILS.map(e => e.toLowerCase()).includes(email.toLowerCase());
+      return currentIsAdmin; // decidido pelo servidor
     }
 
     // ============================================================
@@ -921,7 +837,8 @@
     // ============================================================
     async function loadDriveData() {
       try {
-        const res = await fetch(FUNCTIONS_BASE);
+        const res = await fetch(FUNCTIONS_BASE, { headers: authHeaders() });
+        if (res.status === 401 || res.status === 403) { logout(); return; }
         if (!res.ok) throw new Error("Erro ao buscar artistas: " + res.status);
         const data = await res.json();
         allArtists = (data.artists || []).map(a => ({ ...a, photoUrl: normalizePhotoUrl(a.photoUrl) }));
@@ -953,7 +870,7 @@
         const artist = artists[i];
         if (status) status.textContent = "Indexando músicas... " + (i + 1) + "/" + artists.length;
         try {
-          const res = await fetch(FUNCTIONS_FILES_BASE + "?folderId=" + artist.folderId);
+          const res = await fetch(FUNCTIONS_FILES_BASE + "?folderId=" + encodeURIComponent(artist.folderId), { headers: authHeaders() });
           if (!res.ok) continue;
           const data = await res.json();
           const items = (data.items || []).filter(it => it.type !== "folder");
@@ -963,7 +880,7 @@
               artistId: artist.folderId,
               photoUrl: artist.photoUrl || "",
               trackName: item.name,
-              href: item.webContentLink || ("https://drive.google.com/file/d/" + item.id + "/view"),
+              href: item.downloadUrl,
               ext: item.name.split(".").pop().toUpperCase(),
               size: item.size ? (Math.round(item.size / 1024 / 1024 * 10) / 10) + " MB" : "",
             });
@@ -1007,7 +924,7 @@
         const thumb = t.photoUrl
           ? '<div class="track-result-artist-thumb"><img src="' + t.photoUrl + '" alt="" referrerpolicy="no-referrer" onerror="this.remove()" /></div>'
           : '<div class="track-result-artist-thumb">♪</div>';
-        return '<a class="track-result-row" href="' + t.href + '" target="_blank" rel="noreferrer" onclick="logDownloadDirect(\'' + t.trackName.replace(/'/g,"\'") + '\',\'' + t.artistName.replace(/'/g,"\'") + '\')">' +
+        return '<a class="track-result-row" href="' + t.href + '" target="_blank" rel="noreferrer">' +
           thumb +
           '<div class="track-result-info">' +
             '<div class="track-result-name">' + highlightMatch(t.trackName, query) + '</div>' +
@@ -1019,9 +936,7 @@
       section.style.display = "block";
     }
 
-    async function logDownloadDirect(fileName, artistName) {
-      try { await window.fsLogDownload(currentUserEmail, fileName, artistName); } catch(e) {}
-    }
+    // O registro de downloads agora é feito pelo servidor, no próprio link de download.
 
     // ============================================================
     // FAVORITOS (localStorage)
@@ -1189,7 +1104,7 @@
       document.getElementById("modal-tracks").innerHTML = '<div class="spinner-wrap" style="padding:32px"><div class="spinner-ring"></div> Carregando</div>';
       document.getElementById("modal-overlay").classList.add("active");
       try {
-        const res = await fetch(FUNCTIONS_FILES_BASE + "?folderId=" + artist.folderId);
+        const res = await fetch(FUNCTIONS_FILES_BASE + "?folderId=" + encodeURIComponent(artist.folderId), { headers: authHeaders() });
         if (!res.ok) throw new Error("Erro ao buscar arquivos");
         const data = await res.json();
         const allItems = data.items || [];
@@ -1201,8 +1116,8 @@
           fileIndex++;
           const ext = item.name.split(".").pop().toUpperCase();
           const sizeMb = item.size ? (Math.round(item.size / 1024 / 1024 * 10) / 10) + " MB" : "";
-          const href = item.webContentLink || ("https://drive.google.com/file/d/" + item.id + "/view");
-          return '<a class="track-row" href="' + href + '" target="_blank" rel="noreferrer" onclick="logDownload(\'' + item.name.replace(/'/g, "\\'") + '\')">' +
+          const href = item.downloadUrl;
+          return '<a class="track-row" href="' + esc(href) + '" target="_blank" rel="noreferrer">' +
             '<div class="track-num">' + String(fileIndex).padStart(2, "0") + '</div>' +
             '<div class="track-info"><div class="track-name">' + item.name + '</div>' +
             (sizeMb ? '<div class="track-size">' + sizeMb + '</div>' : '') + '</div>' +
@@ -1214,12 +1129,6 @@
       }
     }
 
-    async function logDownload(fileName) {
-      try {
-        const artistName = currentArtistInModal ? currentArtistInModal.name : "";
-        await window.fsLogDownload(currentUserEmail, fileName, artistName);
-      } catch(e) { console.error("Erro ao registrar download:", e); }
-    }
 
     async function listAllContents(folderId, depth = 0) {
       const items = await listChildren(folderId);
@@ -1266,7 +1175,7 @@
       btn.textContent = "ENVIANDO...";
 
       try {
-        await window.fsSaveRequest({ nome, emailCompra, emailGoogle, mensagem: msg });
+        await api("requestAccess", { nome, emailCompra, emailGoogle, mensagem: msg });
 
         await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
           nome,
@@ -1322,7 +1231,7 @@
 
     async function loadPendingCount() {
       try {
-        const list = await window.fsGetPendingRequests();
+        const list = (await api("listRequests")).requests;
         const badge = document.getElementById("pending-badge");
         if (list.length > 0) {
           badge.textContent = list.length;
@@ -1337,7 +1246,7 @@
       const container = document.getElementById("admin-pending-list");
       container.innerHTML = '<div style="padding:16px 24px;color:#444;font-size:12px">Carregando...</div>';
       try {
-        const list = await window.fsGetPendingRequests();
+        const list = (await api("listRequests")).requests;
         if (list.length === 0) {
           container.innerHTML = '<div style="padding:16px 24px;color:#444;font-size:12px;font-family:Lato,sans-serif">Nenhuma solicitação pendente.</div>';
           return;
@@ -1345,14 +1254,14 @@
         container.innerHTML = list.map(r => {
           const date = r.createdAt ? new Date(r.createdAt.seconds * 1000).toLocaleString("pt-BR") : "";
           return `<div style="padding:16px 24px;border-bottom:1px solid #141414">
-            <div style="font-family:'Cinzel',serif;font-size:11px;color:#c9a84c;letter-spacing:1px;margin-bottom:6px">${r.nome}</div>
-            <div style="font-family:'Lato',sans-serif;font-size:12px;color:#777;margin-bottom:2px">Compra: ${r.emailCompra}</div>
-            <div style="font-family:'Lato',sans-serif;font-size:12px;color:#aaa;margin-bottom:2px">Google: ${r.emailGoogle}</div>
-            ${r.mensagem ? `<div style="font-family:'Lato',sans-serif;font-size:11px;color:#555;margin-bottom:8px;font-style:italic">"${r.mensagem}"</div>` : ''}
+            <div style="font-family:'Cinzel',serif;font-size:11px;color:#c9a84c;letter-spacing:1px;margin-bottom:6px">${esc(r.nome)}</div>
+            <div style="font-family:'Lato',sans-serif;font-size:12px;color:#777;margin-bottom:2px">Compra: ${esc(r.emailCompra)}</div>
+            <div style="font-family:'Lato',sans-serif;font-size:12px;color:#aaa;margin-bottom:2px">Google: ${esc(r.emailGoogle)}</div>
+            ${r.mensagem ? `<div style="font-family:'Lato',sans-serif;font-size:11px;color:#555;margin-bottom:8px;font-style:italic">"${esc(r.mensagem)}"</div>` : ''}
             ${date ? `<div style="font-family:'Lato',sans-serif;font-size:10px;color:#333;margin-bottom:10px;letter-spacing:1px">${date}</div>` : ''}
             <div style="display:flex;gap:8px">
-              <button onclick="approveRequest('${r.id}','${r.emailGoogle}')" style="background:#c9a84c;border:none;border-radius:3px;padding:6px 14px;color:#000;font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;cursor:pointer">APROVAR</button>
-              <button onclick="rejectRequest('${r.id}')" style="background:none;border:1px solid #333;border-radius:3px;padding:6px 14px;color:#555;font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;cursor:pointer">REJEITAR</button>
+              <button data-id="${esc(r.id)}" onclick="approveRequest(this.dataset.id)" style="background:#c9a84c;border:none;border-radius:3px;padding:6px 14px;color:#000;font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;cursor:pointer">APROVAR</button>
+              <button data-id="${esc(r.id)}" onclick="rejectRequest(this.dataset.id)" style="background:none;border:1px solid #333;border-radius:3px;padding:6px 14px;color:#555;font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;cursor:pointer">REJEITAR</button>
             </div>
           </div>`;
         }).join("");
@@ -1361,9 +1270,9 @@
       }
     }
 
-    async function approveRequest(requestId, emailGoogle) {
+    async function approveRequest(requestId) {
       try {
-        await window.fsApproveRequest(requestId, emailGoogle);
+        await api("approveRequest", { id: requestId });
         await loadPendingRequests();
         await loadPendingCount();
       } catch(e) { console.error("Erro ao aprovar:", e); }
@@ -1371,7 +1280,7 @@
 
     async function rejectRequest(requestId) {
       try {
-        await window.fsRejectRequest(requestId);
+        await api("rejectRequest", { id: requestId });
         await loadPendingRequests();
         await loadPendingCount();
       } catch(e) { console.error("Erro ao rejeitar:", e); }
@@ -1383,16 +1292,16 @@
       const container = document.getElementById("admin-email-list");
       container.innerHTML = '<div style="padding:16px 24px;color:#444;font-size:12px">Carregando...</div>';
       try {
-        const list = await window.fsGetAuthorizedEmails();
+        const list = (await api("listEmails")).emails;
         if (list.length === 0) { container.innerHTML = '<div style="padding:16px 24px;color:#444;font-size:12px">Nenhum usuário cadastrado.</div>'; return; }
         container.innerHTML = list.map(u => {
           const date = u.addedAt ? new Date(u.addedAt.seconds * 1000).toLocaleDateString("pt-BR") : "";
           const source = u.source === "hotmart" ? " · Hotmart" : u.source === "manual" ? " · Manual" : "";
           return '<div class="admin-email-row">' +
-            '<div><div class="admin-email-text">' + u.email + '</div>' +
+            '<div><div class="admin-email-text">' + esc(u.email) + '</div>' +
             (date ? '<div style="font-size:10px;color:#444;margin-top:2px;letter-spacing:1px">' + date + source + '</div>' : '') +
             '</div>' +
-            '<button class="admin-remove-btn" onclick="adminRemove(\'' + u.email + '\')">×</button></div>';
+            '<button class="admin-remove-btn" data-email="' + esc(u.email) + '" onclick="adminRemove(this.dataset.email)">×</button></div>';
         }).join("");
       } catch(e) { container.innerHTML = '<div style="padding:16px 24px;color:#e55;font-size:12px">Erro ao carregar lista.</div>'; }
     }
@@ -1402,13 +1311,13 @@
       const email = input.value.trim().toLowerCase();
       if (!email) return;
       input.value = ""; input.disabled = true;
-      try { await window.fsAddEmail(email); await renderAdminList(); }
+      try { await api("addEmail", { email }); await renderAdminList(); }
       catch(e) { console.error("Erro ao adicionar:", e); }
       finally { input.disabled = false; }
     }
 
     async function adminRemove(email) {
-      try { await window.fsRemoveEmail(email); await renderAdminList(); }
+      try { await api("removeEmail", { email }); await renderAdminList(); }
       catch(e) { console.error("Erro ao remover:", e); }
     }
 
@@ -1416,7 +1325,7 @@
       const container = document.getElementById("admin-downloads-list");
       container.innerHTML = '<div style="padding:16px 24px;color:#444;font-size:12px">Carregando...</div>';
       try {
-        allDownloads = await window.fsGetDownloads();
+        allDownloads = (await api("listDownloads")).downloads;
         renderDownloads(allDownloads);
       } catch(e) { container.innerHTML = '<div style="padding:16px 24px;color:#e55;font-size:12px">Erro ao carregar downloads.</div>'; }
     }
@@ -1427,8 +1336,8 @@
       container.innerHTML = list.map(d => {
         const date = d.downloadedAt ? new Date(d.downloadedAt.seconds * 1000).toLocaleString("pt-BR") : "";
         return '<div class="dl-row">' +
-          '<div class="dl-email">' + d.email + '</div>' +
-          '<div class="dl-file">' + (d.artistName ? d.artistName + " — " : "") + d.fileName + '</div>' +
+          '<div class="dl-email">' + esc(d.email) + '</div>' +
+          '<div class="dl-file">' + esc((d.artistName ? d.artistName + " — " : "") + d.fileName) + '</div>' +
           (date ? '<div class="dl-date">' + date + '</div>' : '') +
           '</div>';
       }).join("");
