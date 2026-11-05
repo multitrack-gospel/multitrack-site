@@ -506,7 +506,7 @@
   <div id="modal-overlay" onclick="closeModal()">
     <div id="modal-box" onclick="event.stopPropagation()">
       <div id="modal-header">
-        <img id="modal-photo" src="" alt="" />
+        <img id="modal-photo" src="" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'" />
         <div>
           <div id="modal-artist-name"></div>
           <div id="modal-sub">MULTITRACKS</div>
@@ -899,6 +899,23 @@
     const FUNCTIONS_BASE = "https://us-central1-gospel-tracks-9a7bd.cloudfunctions.net/getArtists";
     const FUNCTIONS_FILES_BASE = "https://us-central1-gospel-tracks-9a7bd.cloudfunctions.net/getArtistFiles";
 
+    // Fotos: endereço direto da imagem, que não passa pelo redirecionamento do Drive
+    function normalizePhotoUrl(url) {
+      const match = /drive\.google\.com\/thumbnail\?id=([^&]+)/.exec(url || "");
+      return match ? "https://lh3.googleusercontent.com/d/" + match[1] + "=w400" : url;
+    }
+
+    // Se a foto falhar, mostra as iniciais do artista no lugar do ícone quebrado
+    function photoFallback(img) {
+      const placeholder = document.createElement("div");
+      placeholder.className = "card-placeholder";
+      const initials = document.createElement("span");
+      initials.className = "card-initials";
+      initials.textContent = getInitials(img.alt);
+      placeholder.appendChild(initials);
+      img.replaceWith(placeholder);
+    }
+
     // ============================================================
     // CARREGAR DADOS via Firebase Functions
     // ============================================================
@@ -907,7 +924,7 @@
         const res = await fetch(FUNCTIONS_BASE);
         if (!res.ok) throw new Error("Erro ao buscar artistas: " + res.status);
         const data = await res.json();
-        allArtists = data.artists || [];
+        allArtists = (data.artists || []).map(a => ({ ...a, photoUrl: normalizePhotoUrl(a.photoUrl) }));
         renderGrid(allArtists);
         // Inicia indexação de músicas em background (sem bloquear a UI)
         setTimeout(() => buildTrackIndex(allArtists), 1500);
@@ -988,7 +1005,7 @@
 
       list.innerHTML = matches.slice(0, 60).map(t => {
         const thumb = t.photoUrl
-          ? '<div class="track-result-artist-thumb"><img src="' + t.photoUrl + '" alt="" /></div>'
+          ? '<div class="track-result-artist-thumb"><img src="' + t.photoUrl + '" alt="" referrerpolicy="no-referrer" onerror="this.remove()" /></div>'
           : '<div class="track-result-artist-thumb">♪</div>';
         return '<a class="track-result-row" href="' + t.href + '" target="_blank" rel="noreferrer" onclick="logDownloadDirect(\'' + t.trackName.replace(/'/g,"\'") + '\',\'' + t.artistName.replace(/'/g,"\'") + '\')">' +
           thumb +
@@ -1085,7 +1102,7 @@
       card.onclick = () => openModal(artist);
       const isFav = isFavorite(artist.folderId);
       card.innerHTML = '<div class="card-img-wrap">' +
-        (artist.photoUrl ? '<img class="card-img" src="' + artist.photoUrl + '" alt="' + artist.name + '" />' : '<div class="card-placeholder"><span class="card-initials">' + getInitials(artist.name) + '</span></div>') +
+        (artist.photoUrl ? '<img class="card-img" src="' + artist.photoUrl + '" alt="' + artist.name + '" referrerpolicy="no-referrer" onerror="photoFallback(this)" />' : '<div class="card-placeholder"><span class="card-initials">' + getInitials(artist.name) + '</span></div>') +
         '<div class="card-overlay"></div>' +
         '<button class="fav-btn ' + (isFav ? "active" : "") + '" data-id="' + artist.folderId + '" onclick="toggleFavorite(\'' + artist.folderId + '\', event)" title="Favoritar">' + (isFav ? "♥" : "♡") + '</button>' +
         '<div class="card-info"><div class="card-name">' + artist.name + '</div>' +
